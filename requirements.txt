@@ -1,3 +1,6 @@
 pydantic-ai
 httpx
 python-dotenv
+langfuse
+streamlit
+groq

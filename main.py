@@ -4,6 +4,7 @@ Simple Finnhub News Chatbot
 A single Pydantic AI agent with one tool: `get_company_news`.
 The tool calls Finnhub's /api/v1/company-news endpoint, and the agent
 answers the user's question using only the data that endpoint returns.
+
 """
 
 import os
@@ -15,23 +16,25 @@ import httpx
 from dotenv import load_dotenv
 from pydantic_ai import Agent, RunContext
 
-load_dotenv()
+load_dotenv()  # reads FINNHUB_API_KEY and GROQ_API_KEY from .env
 
 
-
+# ---------------------------------------------------------------------------
 # Dependencies: things the tool needs at runtime (API key + shared HTTP client)
-
+# ---------------------------------------------------------------------------
 @dataclass
 class Deps:
     finnhub_api_key: str
     http_client: httpx.AsyncClient
+    tool_call_log: list[dict] | None = None  # what the tool was CALLED WITH (ticker, days_back) — for the Tool Selection evaluator
+    articles_log: list[dict] | None = None  # what the tool RETURNED (headlines/summaries) — for the Groundedness evaluator
 
 
-
+# ---------------------------------------------------------------------------
 # Agent definition
-
+# ---------------------------------------------------------------------------
 agent = Agent(
-    "google:gemini-2.5-flash",
+    "groq:openai/gpt-oss-120b",
     deps_type=Deps,
     instructions=(
         "You are a financial news assistant. You have exactly one tool, "
@@ -47,9 +50,9 @@ agent = Agent(
 )
 
 
-
+# ---------------------------------------------------------------------------
 # The single tool
-
+# ---------------------------------------------------------------------------
 @agent.tool
 async def get_company_news(
     ctx: RunContext[Deps],
@@ -70,6 +73,9 @@ async def get_company_news(
     today = date.today()
     from_date = today - timedelta(days=days_back)
 
+    if ctx.deps.tool_call_log is not None:
+        ctx.deps.tool_call_log.append({"ticker": ticker.upper(), "days_back": days_back})
+
     response = await ctx.deps.http_client.get(
         "https://finnhub.io/api/v1/company-news",
         params={
@@ -82,8 +88,6 @@ async def get_company_news(
     response.raise_for_status()
     articles = response.json()
 
-    # Keep the payload lean — trim to the fields the agent actually needs,
-    # and cap the count so we don't blow the model's context on a busy ticker.
     trimmed = [
         {
             "headline": a.get("headline"),
@@ -95,9 +99,14 @@ async def get_company_news(
         }
         for a in articles[:15]
     ]
+
+    if ctx.deps.articles_log is not None:
+        ctx.deps.articles_log.extend(trimmed)
+
     return trimmed
 
 
+# ---------------------------------------------------------------------------
 # Simple CLI chat loop
 # ---------------------------------------------------------------------------
 async def main() -> None:
